@@ -17,8 +17,11 @@ name = "accountsdb-plugin-rabbitmq"
 version = "0.1.0"
 dependencies = [
  "async-global-executor",
+ "bs58",
  "lapin",
+ "log",
  "serde",
+ "serde_json",
  "solana-accountsdb-plugin-interface",
 ]
 

@@ -1,4 +1,9 @@
 
 {
- "libpath": "/Users/danielmiller/projects/accountsdb-plugin-rabbitmq/target/debug/libaccountsdb_plugin_rabbitmq.dylib"
+ "libpath": "/Users/danielmiller/projects/accountsdb-plugin-rabbitmq/target/debug/libaccountsdb_plugin_rabbitmq.dylib",
+  "accounts_selector": {
+    "owners" : [
+      "11111111111111111111111111111111"
+    ]
+  }
 }

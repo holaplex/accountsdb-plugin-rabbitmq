@@ -1,18 +1,25 @@
+use lapin::{
+  options::*, publisher_confirm::Confirmation, types::FieldTable, BasicProperties, Channel,
+  Connection, ConnectionProperties,
+};
 use serde::{Deserialize, Serialize};
 use solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
   AccountsDbPlugin, AccountsDbPluginError, ReplicaAccountInfoVersions, ReplicaBlockInfoVersions,
   ReplicaTransactionInfoVersions, Result, SlotStatus,
 };
 use std::sync::Arc;
-use lapin::{
-  options::*, publisher_confirm::Confirmation, types::FieldTable, BasicProperties, Connection, Channel,
-  ConnectionProperties,
+
+use { 
+  crate::{account_selector::AccountsSelector}, 
+  log::*,
+  serde_json,
+  std::{fs::File, io::Read},
 };
 
 #[derive(Debug, Default)]
 pub struct AccountsDbPluginRabbitMq {
   channel: Option<Arc<Channel>>,
-
+  accounts_selector: Option<AccountsSelector>,
 }
 
 impl AccountsDbPlugin for AccountsDbPluginRabbitMq {
@@ -20,24 +27,41 @@ impl AccountsDbPlugin for AccountsDbPluginRabbitMq {
     "AccountsDbPluginRabbitMq"
   }
 
-  fn on_load(&mut self, _config_file: &str) -> Result<()> {
-    let addr = std::env::var("AMQP_ADDR").unwrap_or_else(|_| "amqp://127.0.0.1:5672/%2f".into());
-    
+  fn on_load(&mut self, config_file: &str) -> Result<()> {
+    println!("{}", config_file);
+    info!(
+      "Loading plugin {:?} from config_file {:?}",
+      self.name(),
+      config_file
+    );
+    let mut file = File::open(config_file)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+
+    let result: serde_json::Value = serde_json::from_str(&contents).unwrap();
+
+    self.accounts_selector = Some(Self::create_accounts_selector_from_config(&result));
+
+    let addr = std::env::var("AMQP_ADDR").unwrap();
+
     let channel = async_global_executor::block_on(async {
       let conn = Connection::connect(
-          &addr,
-          ConnectionProperties::default().with_default_executor(8),
+        &addr,
+        ConnectionProperties::default().with_default_executor(8),
       )
-      .await.unwrap();
+      .await
+      .unwrap();
 
       let channel_a = conn.create_channel().await.unwrap();
 
-      channel_a.
-        queue_declare(
+      channel_a
+        .queue_declare(
           "accounts",
           QueueDeclareOptions::default(),
           FieldTable::default(),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
       channel_a
     });
@@ -47,29 +71,78 @@ impl AccountsDbPlugin for AccountsDbPluginRabbitMq {
     Ok(())
   }
 
-  fn update_account(&mut self, account: ReplicaAccountInfoVersions, slot: u64, is_startup: bool) -> Result<()> {
+  fn update_account(
+    &mut self,
+    account: ReplicaAccountInfoVersions,
+    slot: u64,
+    is_startup: bool,
+  ) -> Result<()> {
     match account {
       ReplicaAccountInfoVersions::V0_0_1(account) => {
+        if let Some(accounts_selector) = &self.accounts_selector {
+          if !accounts_selector.is_account_selected(account.pubkey, account.owner) {
+            return Ok(());
+          }
+        } else {
+          return Ok(());
+        }
+
         println!(
           "Updating account {:?} with owner {:?}",
-        account.pubkey, account.owner);
+          bs58::encode(account.pubkey).into_string(),
+          bs58::encode(account.owner).into_string(),
+        );
+
         let channel = self.channel.as_ref().cloned();
         let pubkey = account.pubkey.to_owned();
+        let mut payload = vec![];
+        payload.extend(pubkey);
+        payload.extend(account.owner);
+        payload.extend(slot.to_le_bytes());
+        payload.extend(account.data);
         async_global_executor::spawn(async move {
-          channel.unwrap()
-                  .basic_publish(
-                      "",
-                      "accounts",
-                      BasicPublishOptions::default(),
-                      pubkey.into(),
-                      BasicProperties::default(),
-                  )
-                  .await.unwrap()
-                  .await.unwrap();
-          }).detach();
+          channel
+            .unwrap()
+            .basic_publish(
+              "",
+              "accounts",
+              BasicPublishOptions::default(),
+              payload,
+              BasicProperties::default(),
+            )
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        })
+        .detach();
       }
     }
-  Ok(())
+    Ok(())
+  }
+}
+
+impl AccountsDbPluginRabbitMq {
+  fn create_accounts_selector_from_config(config: &serde_json::Value) -> AccountsSelector {
+      let accounts_selector = &config["accounts_selector"];
+
+      if accounts_selector.is_null() {
+          AccountsSelector::default()
+      } else {
+        
+          let owners = &accounts_selector["owners"];
+          let owners: Vec<String> = if owners.is_array() {
+              owners
+                  .as_array()
+                  .unwrap()
+                  .iter()
+                  .map(|val| val.as_str().unwrap().to_string())
+                  .collect()
+          } else {
+              Vec::default()
+          };
+          AccountsSelector::new(&owners)
+      }
   }
 }
 
