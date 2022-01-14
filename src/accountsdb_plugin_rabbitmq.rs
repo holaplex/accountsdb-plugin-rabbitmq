@@ -1,5 +1,5 @@
 use lapin::{
-  options::*, publisher_confirm::Confirmation, types::FieldTable, BasicProperties, Channel,
+  options::*, publisher_confirm::Confirmation, types::FieldTable, BasicProperties, Channel, ExchangeKind,
   Connection, ConnectionProperties,
 };
 use serde::{Deserialize, Serialize};
@@ -52,18 +52,18 @@ impl AccountsDbPlugin for AccountsDbPluginRabbitMq {
       .await
       .unwrap();
 
-      let channel_a = conn.create_channel().await.unwrap();
+      let channel = conn.create_channel().await.unwrap();
 
-      channel_a
-        .queue_declare(
-          "accounts",
-          QueueDeclareOptions::default(),
-          FieldTable::default(),
+      channel.exchange_declare(
+        "accounts",
+        ExchangeKind::Fanout,
+        ExchangeDeclareOptions::default(),
+        FieldTable::default(),
         )
         .await
         .unwrap();
 
-      channel_a
+      channel
     });
 
     self.channel = Some(Arc::new(channel));
@@ -104,8 +104,8 @@ impl AccountsDbPlugin for AccountsDbPluginRabbitMq {
           channel
             .unwrap()
             .basic_publish(
-              "",
               "accounts",
+              "",
               BasicPublishOptions::default(),
               payload,
               BasicProperties::default(),
